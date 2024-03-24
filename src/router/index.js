@@ -5,16 +5,16 @@ const router = createRouter({
     history: createWebHistory(),
     routes: [
         {
-            path: '/landing',
-            name: 'landing',
-            component: () => import('@/views/pages/Landing.vue')
+            path: '/',
+            name: 'login',
+            component: () => import('@/views/pages/auth/Login.vue')
         },
         {
-            path: '/',
+            path: '/dashboard',
             component: AppLayout,
             children: [
                 {
-                    path: '/',
+                    path: '/dashboard',
                     name: 'dashboard',
                     component: () => import('@/views/Dashboard.vue')
                 }

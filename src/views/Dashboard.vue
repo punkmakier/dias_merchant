@@ -1,15 +1,24 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue';
-import ProductService from '@/service/ProductService';
+import { onMounted, reactive, ref, defineAsyncComponent } from 'vue';
 import { useConfirm } from 'primevue/useconfirm';
 import { useToast } from 'primevue/usetoast';
+import { MerchantAPIRequest as axios } from '@/plugins/APIServices';
+// Components
+const DiasCard = defineAsyncComponent(() => import('@/utils/DiasCard.vue'));
+const OrderCount = defineAsyncComponent(() => import('@/utils/OrderCount.vue'));
+const SalesOrder = defineAsyncComponent(() => import('@/utils/SalesOrder.vue'));
+const SwapCount = defineAsyncComponent(() => import('@/utils/SwapCount.vue'));
+
 const toast = useToast();
 const confirm = useConfirm();
 const showTopUp = ref(false);
 const showPaymentMethod = ref(false);
 const pmText = ref('Add');
 const selectedIDPaymentMethod = ref();
-
+const showLoadingPaymentMethod = ref(false);
+const showLoadingTopUp = ref(false);
+const checkAmountDisabled = ref(true);
+const buyText = ref('Buy More Dias');
 const state = reactive({
     acc_name: '',
     acc_num: '',
@@ -30,8 +39,8 @@ const stateTopUp = reactive({
     fee: 0
 });
 
-const adminTopUpPaymentMethod = ref([{ name: 'GCash', pmLogo: 'gcash.png', acc_name: 'Mark Allan Carba Admin', acc_num: '5435345344' }]);
-
+const adminTopUpPaymentMethod = ref([]);
+const adminPaymentInfoResult = ref();
 const paymentMethods = ref([
     { name: 'GCash', pmLogo: 'gcash.png' },
     { name: 'Paymaya', pmLogo: 'paymaya.png' },
@@ -64,15 +73,40 @@ const lineData = reactive({
 });
 
 const lineOptions = ref(null);
-const productService = new ProductService();
 
-const fetchPaymentMethod = ref([
-    { id: 1, acc_name: 'Marco', selectedPaymentMethod: { name: 'GCash', pmLogo: 'gcash.png' }, selectedStatus: { name: 'Active', status: 'success' }, transactionLimit: 10000, acc_num: '09471559441', qrcode: null },
-    { id: 2, acc_name: 'Mark', selectedPaymentMethod: { name: 'Paymaya', pmLogo: 'paymaya.png' }, selectedStatus: { name: 'Inactive', status: 'danger' }, transactionLimit: 100000, acc_num: '09471559441', qrcode: null }
-]);
+const fetchPaymentMethod = ref();
+const store = JSON.parse(localStorage.getItem('auth.merchant'));
 
-onMounted(() => {
-    productService.getProductsSmall().then((data) => (products.value = data));
+onMounted(async () => {
+    const passData = { username: store.username, token: store.token };
+    const response = await axios.postTeamWalletMethod(passData);
+    const updatedResponse = response.data.map((item) => {
+        // Update method field
+        if (item.selectedPaymentMethod === 'GCASH') {
+            item.selectedPaymentMethod = { name: 'GCash', pmLogo: 'gcash.png' };
+        }
+        if (item.selectedPaymentMethod === 'BDO') {
+            item.selectedPaymentMethod = { name: 'BDO', pmLogo: 'bdo.png' };
+        }
+        if (item.selectedPaymentMethod === 'PAYMAYA') {
+            item.selectedPaymentMethod = { name: 'Paymaya', pmLogo: 'paymaya.png' };
+        }
+        if (item.selectedPaymentMethod === 'CHINABANK') {
+            item.selectedPaymentMethod = { name: 'Chinabank', pmLogo: 'chinabank.png' };
+        }
+
+        // Update status field
+        if (item.selectedStatus == 1) {
+            item.selectedStatus = { name: 'Active', status: 'success' };
+        }
+        if (item.selectedStatus == 0) {
+            item.selectedStatus = { name: 'Inactive', status: 'danger' };
+        }
+        return item;
+    });
+    fetchPaymentMethod.value = updatedResponse;
+
+    console.log(fetchPaymentMethod.value);
 });
 
 const customBase64Uploader = async (event) => {
@@ -92,6 +126,7 @@ const openPaymentMethod = () => {
     showPaymentMethod.value = true;
     pmText.value = 'Add';
     state.acc_name = '';
+    state.paymentName = '';
     state.acc_num = '';
     state.selectedPaymentMethod = null;
     state.transactionLimit = 0;
@@ -111,14 +146,14 @@ const items = ref([
                     if (fetchRes && fetchRes.length > 0) {
                         state.acc_name = fetchRes[0].acc_name;
                         state.acc_num = fetchRes[0].acc_num;
-                        state.transactionLimit = fetchRes[0].transactionLimit;
+                        state.transactionLimit = fetchRes[0].limit;
                         state.selectedPaymentMethod = fetchRes[0].selectedPaymentMethod;
                         state.selectedStatus = fetchRes[0].selectedStatus;
+                        state.paymentName = fetchRes[0].wallet_name;
+                        disabledPaymentDropdown.value = false;
 
                         state.selectedPaymentMethod.pmLogo = fetchRes[0].selectedPaymentMethod.pmLogo;
                         state.selectedStatus = fetchRes[0].selectedStatus;
-                        console.log(state.selectedPaymentMethod);
-                        console.log(state.selectedStatus);
                     }
                 }
             },
@@ -134,8 +169,19 @@ const items = ref([
                         acceptLabel: 'Delete',
                         rejectClass: 'p-button-secondary p-button-outlined',
                         acceptClass: 'p-button-danger',
-                        accept: () => {
-                            fetchPaymentMethod.value = fetchPaymentMethod.value.filter((x) => x.id !== selectedIDPaymentMethod.value);
+                        accept: async () => {
+                            const passData = {
+                                id: selectedIDPaymentMethod.value,
+                                username: store.username,
+                                token: store.token
+                            };
+                            const result = await axios.postTeamWalletMethodDelete(passData);
+                            if (result.resStatus === 0) {
+                                fetchPaymentMethod.value = fetchPaymentMethod.value.filter((x) => x.id !== selectedIDPaymentMethod.value);
+                                toast.add({ severity: 'success', summary: 'Success', detail: 'You have successfully deleted a payment method.', life: 5000 });
+                            } else {
+                                toast.add({ severity: 'error', summary: 'Failed', detail: result.resMsg, life: 5000 });
+                            }
                         }
                     });
                 }
@@ -153,57 +199,95 @@ const showID = (id) => {
     selectedIDPaymentMethod.value = id;
 };
 
-const handlePaymentMethod = () => {
+const handlePaymentMethod = async () => {
     const id = fetchPaymentMethod.value.length;
-
+    showLoadingPaymentMethod.value = true;
     state.id = id + 1;
 
-    console.log(state);
+    const passData = {
+        username: store.username,
+        token: store.token,
+        method: state.selectedPaymentMethod.name.toUpperCase(),
+        acc_num: state.acc_num,
+        acc_name: state.acc_name,
+        wallet_name: state.paymentName,
+        limit: state.transactionLimit,
+        status: state.selectedStatus.name === 'Active' ? 1 : 0
+    };
 
-    fetchPaymentMethod.value = [...fetchPaymentMethod.value, { ...state }];
-    console.log(fetchPaymentMethod.value);
-    showPaymentMethod.value = false;
-    pmText.value = 'Add';
-    state.acc_name = '';
-    state.acc_num = '';
-    state.selectedPaymentMethod = null;
-    state.transactionLimit = 0;
-    toast.add({ severity: 'success', summary: 'Success', detail: 'New payment method has been successfully added.', life: 5000 });
+    const result = await axios.postTeamWalletMethodAdd(passData);
+
+    if (result.resStatus === 0) {
+        fetchPaymentMethod.value = [...fetchPaymentMethod.value, { ...state }];
+        showPaymentMethod.value = false;
+        pmText.value = 'Add';
+        state.acc_name = '';
+        state.acc_num = '';
+        state.selectedPaymentMethod = null;
+        state.transactionLimit = 0;
+        toast.add({ severity: 'success', summary: 'Success', detail: 'New payment method has been successfully added.', life: 5000 });
+        showLoadingPaymentMethod.value = false;
+    } else {
+        showLoadingPaymentMethod.value = false;
+        toast.add({ severity: 'error', summary: 'Failed', detail: result.resMsg, life: 5000 });
+    }
 };
 
 const handleSelectedStatus = () => {
     // state.status = state.selectedStatus.name;
 };
 
-const updatePaymentMethod = () => {
-    const updatedArray = fetchPaymentMethod.value.map((item) => {
-        if (item.id === selectedIDPaymentMethod.value) {
-            const data = {
-                pmLogo: state.pmLogo,
-                acc_name: state.acc_name,
-                selectedPaymentMethod: state.selectedPaymentMethod,
-                transactionLimit: state.transactionLimit,
-                acc_num: state.acc_num
-            };
-            console.log(data);
+const updatePaymentMethod = async () => {
+    showLoadingPaymentMethod.value = true;
+    const passData = {
+        id: selectedIDPaymentMethod.value,
+        username: store.username,
+        token: store.token,
+        method: state.selectedPaymentMethod.name.toUpperCase(),
+        acc_num: state.acc_num,
+        acc_name: state.acc_name,
+        wallet_name: state.paymentName,
+        limit: state.transactionLimit,
+        status: state.selectedStatus.name === 'Active' ? 1 : 0
+    };
+    const result = await axios.postTeamWalletMethodUpdate(passData);
+    if (result.resStatus === 0) {
+        const updatedArray = fetchPaymentMethod.value.map((item) => {
+            if (item.id === selectedIDPaymentMethod.value) {
+                const data = {
+                    acc_name: state.acc_name,
+                    selectedPaymentMethod: state.selectedPaymentMethod,
+                    transactionLimit: state.transactionLimit,
+                    acc_num: state.acc_num,
+                    wallet_name: state.paymentName,
+                    selectedStatus: state.selectedStatus
+                };
 
-            return {
-                ...item,
-                ...data
-            };
-        }
-        return item;
-    });
+                return {
+                    ...item,
+                    ...data
+                };
+            }
+            return item;
+        });
 
-    console.log(updatedArray);
-    fetchPaymentMethod.value = updatedArray;
-    toast.add({ severity: 'success', summary: 'Success', detail: 'Payment method has been successfully updated.', life: 5000 });
+        fetchPaymentMethod.value = updatedArray;
+        toast.add({ severity: 'success', summary: 'Success', detail: 'Payment method has been successfully updated.', life: 5000 });
+        showLoadingPaymentMethod.value = false;
+        showPaymentMethod.value = false;
+    } else {
+        showLoadingPaymentMethod.value = false;
+        toast.add({ severity: 'error', summary: 'Failed', detail: result.resMsg, life: 5000 });
+    }
 };
 
 const handleTopUpMethod = () => {
     console.log(stateTopUp.selectedTopUpMethod);
-    stateTopUp.acc_name = stateTopUp.selectedTopUpMethod.acc_name;
-    stateTopUp.acc_num = stateTopUp.selectedTopUpMethod.acc_num;
+    const res = adminPaymentInfoResult.value.find((item) => item.id === stateTopUp.selectedTopUpMethod.id);
+    stateTopUp.acc_name = res.account_name;
+    stateTopUp.acc_num = res.acc_num;
+    stateTopUp.fee = res.fee;
+    checkAmountDisabled.value = false;
 };
 const disabledPaymentDropdown = ref(true);
 const handlePaymentName = () => {
@@ -213,11 +297,56 @@ const handlePaymentName = () => {
         disabledPaymentDropdown.value = true;
     }
 };
+const clickedTopUp = async () => {
+    buyText.value = 'Loading...';
+    adminTopUpPaymentMethod.value = [];
+    const result = await axios.getAdminPaymentMethods();
+    adminPaymentInfoResult.value = result.data;
+    result.data.map((item) => {
+        if (item.method === 'GCASH') {
+            adminTopUpPaymentMethod.value.push({ name: 'GCash', pmLogo: 'gcash.png', id: item.id });
+        } else if (item.method === 'BDO') {
+            adminTopUpPaymentMethod.value.push({ name: 'BDO', pmLogo: 'bdo.png', id: item.id });
+        } else if (item.method === 'PAYMAYA') {
+            adminTopUpPaymentMethod.value.push({ name: 'Paymaya', pmLogo: 'paymaya.png', id: item.id });
+        } else if (item.method === 'CHINABANK') {
+            adminTopUpPaymentMethod.value.push({ name: 'Chinabank', pmLogo: 'chinabank.png', id: item.id });
+        }
+    });
+    showTopUp.value = true;
+    buyText.value = 'Buy More Dias';
+};
 
-const handleTopUpSubmit = () => {
-    console.log(stateTopUp);
-    showTopUp.value = false;
-    toast.add({ severity: 'success', summary: 'Success', detail: 'Your transaction has been successful; please wait for approval of admin', life: 5000 });
+const handleTopUpSubmit = async () => {
+    showLoadingTopUp.value = true;
+    const passData = {
+        username: store.username,
+        token: store.token,
+        team_name: stateTopUp.acc_team,
+        method: stateTopUp.selectedTopUpMethod?.name.toUpperCase(),
+        acc_num: stateTopUp.acc_num,
+        acc_name: stateTopUp.acc_name,
+        amount: (stateTopUp.amount * stateTopUp.fee) / 100 + stateTopUp.amount
+    };
+    const result = await axios.postTopUpMerchant(passData);
+    console.log(result);
+    if (stateTopUp.amount != 0) {
+        if (result.resStatus === 0) {
+            showTopUp.value = false;
+            toast.add({ severity: 'success', summary: 'Success', detail: 'Your transaction has been successful; please wait for approval of admin', life: 5000 });
+            showLoadingTopUp.value = false;
+            stateTopUp.selectedTopUpMethod = '';
+            stateTopUp.acc_num = '';
+            stateTopUp.acc_name = '';
+            stateTopUp.amount = '';
+        } else {
+            toast.add({ severity: 'error', summary: 'Failed', detail: result.resMsg, life: 5000 });
+            showLoadingTopUp.value = false;
+        }
+    } else {
+        toast.add({ severity: 'error', summary: 'Failed', detail: 'Amount should not be zero (0)', life: 5000 });
+        showLoadingTopUp.value = false;
+    }
 };
 </script>
 
@@ -230,79 +359,23 @@ const handleTopUpSubmit = () => {
                 <div class="col-12 lg:col-6 xl:col-8" style="padding: 0.8rem">
                     <div class="grid" style="margin-top: -3px">
                         <div class="col-12 lg:col-6 xl:col-7" style="padding: 0.3rem">
-                            <div class="card bg-card" style="height: 250px; display: flex; flex-direction: column; justify-content: space-between">
-                                <div class="card-Header flex justify-content-between">
-                                    <img src="/src/assets/images/card-chip.png" style="width: 40px" alt="" />
-                                    <img src="/src/assets/images/dias-logo-text.png" style="width: 90px" alt="" />
-                                    <!-- <span class="text-white dias-title">DIAS Game</span> -->
-                                </div>
-                                <div style="display: flex; flex-direction: column; gap: 10px">
-                                    <span class="text-white">Current Balance</span>
-                                    <span class="mb-2"><img src="/src/assets/images/diaslogo.png" style="width: 20px" alt="" /> <span style="font-size: 2rem" class="text-white">32, 343, 545.00</span></span>
-                                </div>
-                                <div class="card-footer flex justify-content-between">
-                                    <div class="flex gap-3 cursor-pointer" @click="showTopUp = true">
-                                        <i class="pi pi-plus-circle text-xl" style="color: #fff"></i>
-
-                                        <span class="text-white">Buy More Dias</span>
-                                    </div>
-                                    <span class="text-white">Chowzenon</span>
-                                </div>
-                            </div>
+                            <DiasCard @buyMoreDias="clickedTopUp" :buyText="buyText" />
                         </div>
                         <div class="col-12 lg:col-6 xl:col-5" style="padding: 0.3rem">
-                            <div class="card" style="height: 250px">
-                                <div class="flex justify-content-between">
-                                    <div>
-                                        <span class="block text-700 font-medium mb-3">Sales Order</span>
-                                    </div>
-                                    <div class="flex align-items-center justify-content-center bg-blue-100 border-round" style="width: 2.5rem; height: 2.5rem">
-                                        <i class="pi pi-chart-line text-blue-500 text-xl"></i>
-                                    </div>
-                                </div>
-                                <div class="flex justify-content-center align-items-center h-12rem">
-                                    <span style="font-size: 2rem; text-align: center"
-                                        ><span><img src="/src/assets/images/logogradient.png" style="width: 20px" alt="" /></span> 545, 434, 34.00</span
-                                    >
-                                </div>
-                            </div>
+                            <SalesOrder />
                         </div>
                     </div>
                     <div class="grid" style="margin-top: -3px">
                         <div class="col-12 lg:col-6 xl:col-6" style="padding: 0.3rem">
-                            <div class="card" style="height: 195px">
-                                <div class="flex justify-content-between">
-                                    <div>
-                                        <span class="block text-700 font-medium mb-3">Order Count</span>
-                                    </div>
-                                    <div class="flex align-items-center justify-content-center bg-orange-100 border-round" style="width: 2.5rem; height: 2.5rem">
-                                        <i class="pi pi-map-marker text-orange-500 text-xl"></i>
-                                    </div>
-                                </div>
-                                <div class="flex justify-content-center align-items-center h-7rem">
-                                    <span style="font-size: 2rem; text-align: center">435</span>
-                                </div>
-                            </div>
+                            <OrderCount />
                         </div>
                         <div class="col-12 lg:col-6 xl:col-6" style="padding: 0.3rem">
-                            <div class="card" style="height: 195px">
-                                <div class="flex justify-content-between">
-                                    <div>
-                                        <span class="block text-700 font-medium mb-3">Float Swap Count</span>
-                                    </div>
-                                    <div class="flex align-items-center justify-content-center bg-orange-100 border-round" style="width: 2.5rem; height: 2.5rem">
-                                        <i class="pi pi-map-marker text-orange-500 text-xl"></i>
-                                    </div>
-                                </div>
-                                <div class="flex justify-content-center align-items-center h-7rem">
-                                    <span style="font-size: 2rem; text-align: center">435</span>
-                                </div>
-                            </div>
+                            <SwapCount />
                         </div>
                     </div>
                 </div>
 
-                <div class="col-12 lg:col-6 xl:col-4" style="padding: 0.8rem">
+                <div class="col-12 lg:col-6 xl:col-4" style="padding: 0.8rem" v-if="fetchPaymentMethod">
                     <div class="card" style="height: 450px; overflow: auto">
                         <div class="flex justify-content-between align-items-center mb-4">
                             <div>
@@ -403,13 +476,10 @@ const handleTopUpSubmit = () => {
                     <label for="email" class="font-semibold mb-1">Team Name</label>
                     <InputText v-model="stateTopUp.acc_team" id="Email" class="flex-auto" autocomplete="off" disabled />
                 </div>
+
                 <div style="display: flex; flex-direction: column" class="mb-3">
-                    <label for="email" class="font-semibold mb-1">Amount</label>
-                    <InputNumber v-model="stateTopUp.amount" inputId="withoutgrouping" />
-                </div>
-                <div style="display: flex; flex-direction: column" class="mb-3">
-                    <label for="email" class="font-semibold mb-1">Payment Method</label>
-                    <Dropdown v-model="stateTopUp.selectedTopUpMethod" :options="adminTopUpPaymentMethod" @change="handleTopUpMethod" optionLabel="name" placeholder="Select a City" style="width: 100%" class="" />
+                    <label for="email" class="font-semibold mb-1">Payment Method </label>
+                    <Dropdown v-model="stateTopUp.selectedTopUpMethod" :options="adminTopUpPaymentMethod" @change="handleTopUpMethod" optionLabel="name" placeholder="Select" style="width: 100%" class="" />
                 </div>
 
                 <div class="flex align-items-center gap-3 mb-3">
@@ -426,6 +496,10 @@ const handleTopUpSubmit = () => {
                         </div>
                     </div>
                 </div>
+                <div style="display: flex; flex-direction: column" class="mb-3">
+                    <label for="email" class="font-semibold mb-1">Amount</label>
+                    <InputNumber v-model="stateTopUp.amount" inputId="withoutgrouping" :disabled="checkAmountDisabled" />
+                </div>
                 <div class="flex align-items-center gap-3 mb-3">
                     <div style="width: 100%">
                         <div style="display: flex; flex-direction: column">
@@ -441,14 +515,14 @@ const handleTopUpSubmit = () => {
                 <Divider />
                 <div style="display: flex; flex-direction: column; gap: 10px">
                     <span style="font-weight: 700">Amount: {{ stateTopUp.amount.toLocaleString() }}</span>
-                    <span style="font-weight: 700">Fee: {{ (stateTopUp.amount * 0.1).toLocaleString() }}</span>
-                    <span style="font-weight: 700">Total Amount to Pay: {{ (stateTopUp.amount * 0.1 + stateTopUp.amount).toLocaleString() }}</span>
+                    <span style="font-weight: 700">Fee: {{ ((stateTopUp.amount * stateTopUp.fee) / 100).toLocaleString() }}</span>
+                    <span style="font-weight: 700">Total Amount to Pay: {{ ((stateTopUp.amount * stateTopUp.fee) / 100 + stateTopUp.amount).toLocaleString() }}</span>
                 </div>
                 <Divider />
 
                 <div class="flex justify-content-end gap-2">
                     <Button type="button" label="Cancel" severity="secondary" @click="showTopUp = false"></Button>
-                    <Button type="submit" label="Save"></Button>
+                    <Button type="submit" label="Save" :loading="showLoadingTopUp"></Button>
                 </div>
             </form>
         </Dialog>
@@ -464,7 +538,7 @@ const handleTopUpSubmit = () => {
                     <InputText v-model="state.acc_num" id="accountNumber" class="flex-auto" autocomplete="off" />
                 </div>
                 <div style="display: flex; flex-direction: column" class="mb-3">
-                    <label for="paymentName" class="font-semibold mb-1">Payment Name</label>
+                    <label for="paymentName" class="font-semibold mb-1">Wallet Name</label>
                     <InputText v-model="state.paymentName" id="paymentName" @update:modelValue="handlePaymentName" class="flex-auto" autocomplete="off" />
                 </div>
                 <div style="display: flex; flex-direction: column" class="mb-3">
@@ -503,8 +577,8 @@ const handleTopUpSubmit = () => {
 
                 <div class="flex justify-content-end gap-2">
                     <Button type="button" label="Cancel" severity="secondary" @click="showPaymentMethod = false"></Button>
-                    <Button type="submit" label="Save" v-if="pmText === 'Add'"></Button>
-                    <Button type="submit" label="Update" severity="warning" @click="showPaymentMethod = false" v-if="pmText === 'Edit'"></Button>
+                    <Button type="submit" label="Save" v-if="pmText === 'Add'" :loading="showLoadingPaymentMethod"></Button>
+                    <Button type="submit" label="Update" severity="warning" v-if="pmText === 'Edit'" :loading="showLoadingPaymentMethod"></Button>
                 </div>
             </form>
         </Dialog>
